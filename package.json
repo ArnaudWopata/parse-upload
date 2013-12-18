@@ -1,0 +1,16 @@
+{
+  "name": "parse-upload",
+  "version": "0.0.0",
+  "description": "Parse.com file upload",
+  "main": "parse-upload",
+  "author": "Arnaud Rinquin",
+  "license": "BSD",
+  "dependencies": {
+    "kaiseki": "~0.5.3",
+    "commander": "~2.1.0",
+    "q": "~0.9.7",
+    "lodash": "~2.4.1",
+    "promptly": "~0.2.0",
+    "mime": "~1.2.11"
+  }
+}

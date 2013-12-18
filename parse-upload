@@ -1,0 +1,192 @@
+#!/usr/bin/env coffee
+
+Kaiseki = require 'kaiseki'
+program = require 'commander'
+promptly = require 'promptly'
+_ = require 'lodash'
+Q = require 'q'
+fs = require 'fs'
+mime = require 'mime'
+
+APP_ID = process.env.PARSE_APP_ID
+REST_API_KEY = process.env.PARSE_APP_API_KEY
+kaiseki = new Kaiseki APP_ID, REST_API_KEY
+
+verbose = (data...)->
+  if program.verbose
+    console.log data...
+
+getAll = (model)->
+  deferred = Q.defer()
+  kaiseki.getObjects model, (err, res, body, success)->
+    if err
+      deferred.reject err
+    else
+      deferred.resolve body
+  deferred.promise
+
+getInstance = (model, id)->
+  deferred = Q.defer()
+  kaiseki.getObject model, id, (err, res, body, success)->
+    if err
+      deferred.reject err
+    else
+      deferred.resolve body
+  deferred.promise
+
+getInstanceId = (model, id)->
+  deferred = Q.defer()
+
+  if id
+    verbose 'User gave instance id %s', id
+    deferred.resolve(id)
+  else
+    verbose 'User did not gave instance id'
+    listPromise = getAll(model)
+    listPromise.then (objects)->
+      labels =  _.map objects, (instance, index)->
+        label = if program.label then instance[program.label] else instance.objectId
+        verbose 'label', label
+        index + ' - ' + label
+      labels.push 'q - quit'
+      console.log labels.join '\n'
+      values =  [0..objects.length]
+      values.push 'q'
+      promptly.choose 'Which instance (give index)? ', values, (err, index)->
+        if index == 'q'
+          deferred.reject 'user canceled'
+        else
+          chosen = objects[index]
+          deferred.resolve chosen.objectId
+
+  deferred.promise
+
+getFileNames = (path)->
+  deferred = Q.defer()
+
+  fullPath = __dirname + '/' + path
+
+  verbose 'looking at file/dir ', fullPath
+
+  fs.stat fullPath, (err, stats)->
+    if err
+      verbose 'error while getting stats for file', fullPath
+      deferred.reject err
+    else
+      verbose 'stats.isDirectory', stats.isDirectory()
+      if stats.isFile()
+        verbose 'specified path is a file', fullPath
+        deferred.resolve [fullPath]
+      else
+        # list files in directory, synchronously
+        verbose 'specified path is a directory'
+        filesInDir = fs.readdirSync(fullPath)
+        fileNames = _.compact _.map filesInDir, (fileName, index)->
+          filePath = fullPath + '/' + fileName
+          verbose 'checking file', filePath
+          fileStats = fs.statSync(filePath)
+          if fileStats.isFile()
+            return filePath
+          else
+            return null
+
+        if fileNames.length < 1
+          deferred.reject 'no file in directory'
+        else
+          deferred.resolve fileNames
+
+  deferred.promise
+
+uploadFile = (filePath)->
+  deferred = Q.defer()
+
+  fileName = _.last filePath.split '/'
+  verbose 'fileName', fileName
+  verbose 'uploading file', filePath
+  mimeType = mime.lookup filePath
+  verbose 'mime', mimeType
+
+  buffer = fs.readFileSync(filePath)
+
+  kaiseki.uploadFileBuffer buffer, mimeType, fileName, (err, res, body, success)->
+    verbose 'upload callback'
+    unless success
+      verbose 'file upload fails', err
+      deferred.reject err
+    else
+      verbose 'upload successfull ', body
+      console.log 'uploaded', fileName
+      deferred.resolve {
+        name: body.name
+        url: body.url
+        __type: 'File'
+      }
+      # deferred.resolve body.name
+
+  deferred.promise
+
+uploadFiles = (filePaths)->
+  Q.all _.map filePaths, uploadFile
+
+updateObject = (model, attr, id, data)->
+  verbose 'updating model %s[%s].%s with', model, id, attr, data
+  deferred = Q.defer()
+
+  updatedAttrs = {}
+  updatedAttrs[attr] = data
+
+  # data[0]
+
+  verbose 'update attrs', updatedAttrs
+
+  kaiseki.updateObject model, id, updatedAttrs, (err, res, body, success)->
+    verbose 'object update', success, body
+    unless success
+      deferred.reject err
+    else
+      deferred.resolve success
+
+  deferred.promise
+
+upload = (model, attr, path, id)->
+  verbose 'Upload command with args: ', model, attr, path, id
+
+  fileNamesPromise = getFileNames(path)
+  fileNamesPromise.then (fileNames)->
+    verbose 'got file names', fileNames
+
+  idPromise = getInstanceId(model, id)
+  idPromise.then (id)->
+    verbose 'user has chosen', id
+
+  instanceIdAndFilePathsPromise = Q.all [fileNamesPromise, idPromise]
+
+  instanceIdAndFilePathsPromise.then (results)->
+    filePaths = results[0]
+    id = results[1]
+    verbose 'got id and paths.', id, filePaths
+
+    uploadPromise = uploadFiles filePaths
+    finalPromise = uploadPromise.then (filesAttr)->
+      verbose 'all upload successful', filesAttr
+      updateObject model, attr, id, filesAttr
+
+    finalPromise.then ()->
+      console.log 'done'
+
+    finalPromise.fail (err)->
+      console.err err
+
+
+
+
+
+program
+  .version('0.0.0')
+  .option('-v, --verbose', 'moar logs')
+  .option('-l, --label <label>', 'the attr value displayed when showing list (default is objectId)')
+
+uploadCmd = program.command('* [model] [attr] [path] [id]')
+uploadCmd.action upload
+
+program.parse process.argv
